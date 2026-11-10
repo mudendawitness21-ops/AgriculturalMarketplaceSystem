@@ -5,9 +5,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.navigation.NavHostController
+import com.witness.agromarket.data.model.Product
+import com.witness.agromarket.data.repository.ProductRepository
 
 @Composable
-fun AddProductScreen() {
+fun AddProductScreen(
+    navController: NavHostController
+) {
 
     var productName by remember {
         mutableStateOf("")
@@ -22,6 +27,10 @@ fun AddProductScreen() {
     }
 
     var quantity by remember {
+        mutableStateOf("")
+    }
+
+    var errorMessage by remember {
         mutableStateOf("")
     }
 
@@ -87,9 +96,56 @@ fun AddProductScreen() {
         Spacer(modifier = Modifier.height(16.dp))
 
         Button(
-            onClick = { }
+            onClick = {
+
+                if (
+                    productName.isBlank() ||
+                    category.isBlank() ||
+                    price.isBlank() ||
+                    quantity.isBlank()
+                ) {
+
+                    errorMessage = "Please fill in all fields"
+
+                } else {
+
+                    ProductRepository.products.add(
+                        Product(
+                            productName,
+                            category,
+                            price,
+                            quantity
+                        )
+                    )
+
+                    errorMessage = "Product Saved Successfully"
+
+                    productName = ""
+                    category = ""
+                    price = ""
+                    quantity = ""
+                }
+            }
         ) {
             Text("Save Product")
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = errorMessage,
+            color = MaterialTheme.colorScheme.primary
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(
+            onClick = {
+                navController.navigate("home")
+            }
+
+        ) {
+            Text("Back")
         }
     }
 }

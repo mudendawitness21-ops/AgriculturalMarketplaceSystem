@@ -1,8 +1,13 @@
 package com.witness.agromarket.data.model
 
-    data class Product(
-        val id: String = "",
-        val name: String = "",
-        val price: Double = 0.0,
-        val quantity: Int = 0
-    )
+data class Product(
+
+    val productName: String,
+
+    val category: String,
+
+    val price: String,
+
+    val quantity: String
+
+)

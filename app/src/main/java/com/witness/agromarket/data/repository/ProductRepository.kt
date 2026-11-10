@@ -1,4 +1,9 @@
 package com.witness.agromarket.data.repository
 
-class ProductRepository {
+import com.witness.agromarket.data.model.Product
+
+object ProductRepository {
+
+    val products = mutableListOf<Product>()
+
 }
