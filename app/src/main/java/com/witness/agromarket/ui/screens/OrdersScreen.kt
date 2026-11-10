@@ -7,30 +7,41 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
-
-data class OrderItem(
-    val orderId: String,
-    val productName: String,
-    val quantity: String,
-    val totalPriceZmw: Double,
-    val status: String,
-    val buyerOrFarmerName: String
-)
+import com.witness.agromarket.data.model.Order
+import com.witness.agromarket.data.repository.AgroMarketDatabase
+import com.witness.agromarket.data.repository.SessionManager
+import kotlinx.coroutines.launch
 
 @Composable
 fun OrdersScreen(navController: NavHostController) {
-    val orders = remember { mutableStateListOf<OrderItem>() }
+    val context = LocalContext.current
+    val db = remember { AgroMarketDatabase.getDatabase(context) }
+    val orderDao = remember { db.orderDao() }
+    val sessionManager = remember { SessionManager(context) }
+    val scope = rememberCoroutineScope()
+
+    val loggedInPhone = remember { sessionManager.getLoggedInPhone() }
+    val orders by orderDao.getAllOrders().collectAsState(initial = emptyList())
+    val currentUser by db.userDao().observeUserByPhone(loggedInPhone).collectAsState(initial = null)
+    val userRole = currentUser?.role ?: "Buyer"
 
     var productName by remember { mutableStateOf("") }
     var quantity by remember { mutableStateOf("") }
     var totalPriceInput by remember { mutableStateOf("") }
-    var partyName by remember { mutableStateOf("") }
+    var buyerName by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf("") }
-    var showForm by remember { mutableStateOf(true) }
+    var showForm by remember { mutableStateOf(false) }
+
+    LaunchedEffect(currentUser) {
+        if (buyerName.isBlank() && currentUser != null) {
+            buyerName = currentUser!!.fullName
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -67,10 +78,7 @@ fun OrdersScreen(navController: NavHostController) {
         Spacer(modifier = Modifier.height(12.dp))
 
         if (showForm) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-            ) {
+            Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
                         text = "Enter Order Details",
@@ -109,9 +117,9 @@ fun OrdersScreen(navController: NavHostController) {
                     Spacer(modifier = Modifier.height(8.dp))
 
                     OutlinedTextField(
-                        value = partyName,
-                        onValueChange = { partyName = it },
-                        label = { Text("Buyer or Farmer Name") },
+                        value = buyerName,
+                        onValueChange = { buyerName = it },
+                        label = { Text("Buyer Full Name") },
                         modifier = Modifier.fillMaxWidth()
                     )
 
@@ -131,7 +139,7 @@ fun OrdersScreen(navController: NavHostController) {
                                 productName = ""
                                 quantity = ""
                                 totalPriceInput = ""
-                                partyName = ""
+                                buyerName = ""
                                 errorMessage = ""
                             },
                             modifier = Modifier.weight(1f)
@@ -142,27 +150,27 @@ fun OrdersScreen(navController: NavHostController) {
                         Button(
                             onClick = {
                                 val parsedPrice = totalPriceInput.toDoubleOrNull()
-                                if (productName.isBlank() || quantity.isBlank() || parsedPrice == null || partyName.isBlank()) {
+                                if (productName.isBlank() || quantity.isBlank() || parsedPrice == null || buyerName.isBlank()) {
                                     errorMessage = "Please fill in all fields with a valid price."
                                 } else {
-                                    val nextId = "ORD-${1 + orders.size}"
-                                    orders.add(
-                                        0,
-                                        OrderItem(
-                                            orderId = nextId,
-                                            productName = productName.trim(),
-                                            quantity = quantity.trim(),
-                                            totalPriceZmw = parsedPrice,
-                                            status = "Pending",
-                                            buyerOrFarmerName = partyName.trim()
+                                    scope.launch {
+                                        orderDao.insertOrder(
+                                            Order(
+                                                productName = productName.trim(),
+                                                quantity = quantity.trim(),
+                                                totalPriceZmw = parsedPrice,
+                                                status = "Pending",
+                                                buyerOrFarmerName = buyerName.trim(),
+                                                buyerPhone = loggedInPhone,
+                                                paymentStatus = "Unpaid"
+                                            )
                                         )
-                                    )
-                                    productName = ""
-                                    quantity = ""
-                                    totalPriceInput = ""
-                                    partyName = ""
-                                    errorMessage = ""
-                                    showForm = false
+                                        productName = ""
+                                        quantity = ""
+                                        totalPriceInput = ""
+                                        errorMessage = ""
+                                        showForm = false
+                                    }
                                 }
                             },
                             modifier = Modifier.weight(1f)
@@ -177,25 +185,19 @@ fun OrdersScreen(navController: NavHostController) {
         }
 
         if (orders.isEmpty()) {
-            Text(
-                text = "No orders recorded yet.",
-                style = MaterialTheme.typography.bodyMedium
-            )
+            Text(text = "No orders recorded yet.", style = MaterialTheme.typography.bodyMedium)
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(orders) { order ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                    ) {
+                    Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text(text = order.orderId, fontWeight = FontWeight.Bold)
+                                Text(text = "ORD-${order.id}", fontWeight = FontWeight.Bold)
                                 Text(
-                                    text = order.status,
+                                    text = "Delivery: ${order.status}",
                                     color = MaterialTheme.colorScheme.primary,
                                     fontWeight = FontWeight.SemiBold
                                 )
@@ -203,8 +205,13 @@ fun OrdersScreen(navController: NavHostController) {
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(text = "Product: ${order.productName}")
                             Text(text = "Quantity: ${order.quantity}")
-                            Text(text = "Total: ZMW ${order.totalPriceZmw}")
-                            Text(text = "Party: ${order.buyerOrFarmerName}")
+                            Text(text = "Total: ZMW ${"%.2f".format(order.totalPriceZmw)}")
+                            Text(text = "Buyer: ${order.buyerOrFarmerName}")
+                            Text(
+                                text = "Payment: ${order.paymentStatus}",
+                                color = if (order.paymentStatus == "Paid") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                fontWeight = FontWeight.Medium
+                            )
 
                             Spacer(modifier = Modifier.height(8.dp))
 
@@ -212,27 +219,46 @@ fun OrdersScreen(navController: NavHostController) {
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                if (order.status != "Delivered") {
+                                if (userRole == "Farmer" && order.status != "Delivered") {
                                     Button(
                                         onClick = {
-                                            val index = orders.indexOf(order)
-                                            if (index != -1) {
-                                                val nextStatus = when (order.status) {
-                                                    "Pending" -> "Confirmed"
-                                                    "Confirmed" -> "In Transit"
-                                                    else -> "Delivered"
-                                                }
-                                                orders[index] = order.copy(status = nextStatus)
+                                            val nextStatus = when (order.status) {
+                                                "Pending" -> "Confirmed"
+                                                "Confirmed" -> "In Transit"
+                                                else -> "Delivered"
+                                            }
+                                            scope.launch {
+                                                orderDao.updateOrder(order.copy(status = nextStatus))
                                             }
                                         },
                                         modifier = Modifier.weight(1f)
                                     ) {
-                                        Text("Advance Status")
+                                        Text(
+                                            when (order.status) {
+                                                "Pending" -> "Confirm Order"
+                                                "Confirmed" -> "Dispatch Goods"
+                                                else -> "Mark Delivered"
+                                            }
+                                        )
+                                    }
+                                } else if (userRole == "Buyer" && order.status == "In Transit") {
+                                    Button(
+                                        onClick = {
+                                            scope.launch {
+                                                orderDao.updateOrder(order.copy(status = "Delivered"))
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("Confirm Received")
                                     }
                                 }
-
                                 OutlinedButton(
-                                    onClick = { orders.remove(order) },
+                                    onClick = {
+                                        scope.launch {
+                                            orderDao.deleteOrder(order)
+                                        }
+                                    },
                                     modifier = Modifier.weight(1f)
                                 ) {
                                     Text("Delete Order")

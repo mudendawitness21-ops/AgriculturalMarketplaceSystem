@@ -5,13 +5,27 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
+import com.witness.agromarket.data.model.User
+import com.witness.agromarket.data.repository.AgroMarketDatabase
+import com.witness.agromarket.data.repository.SessionManager
+import kotlinx.coroutines.launch
 
 @Composable
 fun ProfileScreen(navController: NavHostController) {
+    val context = LocalContext.current
+    val db = remember { AgroMarketDatabase.getDatabase(context) }
+    val userDao = remember { db.userDao() }
+    val sessionManager = remember { SessionManager(context) }
+    val scope = rememberCoroutineScope()
+
+    val loggedInPhone = remember { sessionManager.getLoggedInPhone() }
+    val savedUser by userDao.observeUserByPhone(loggedInPhone).collectAsState(initial = null)
+
     var fullName by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
     var location by remember { mutableStateOf("") }
@@ -19,6 +33,17 @@ fun ProfileScreen(navController: NavHostController) {
     var role by remember { mutableStateOf("") }
     var isEditing by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf("") }
+
+    LaunchedEffect(savedUser) {
+        savedUser?.let { user ->
+            fullName = user.fullName
+            phone = user.phone
+            location = user.location
+            farmOrBusinessName = user.farmOrBusinessName
+            role = user.role
+            isEditing = false
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -106,6 +131,12 @@ fun ProfileScreen(navController: NavHostController) {
                     Text(text = "Phone: $phone")
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(text = "Location: $location")
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Wallet Balance: ZMW ${"%.2f".format(savedUser?.walletBalanceZmw ?: 0.0)}",
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
                 }
             }
         }
@@ -138,8 +169,26 @@ fun ProfileScreen(navController: NavHostController) {
                         if (fullName.isBlank() || role.isBlank() || farmOrBusinessName.isBlank() || phone.isBlank() || location.isBlank()) {
                             errorMessage = "Please fill in all fields and select a role."
                         } else {
-                            errorMessage = ""
-                            isEditing = false
+                            scope.launch {
+                                val existing = savedUser
+                                userDao.insertOrUpdateUser(
+                                    User(
+                                        id = existing?.id ?: 0,
+                                        fullName = fullName.trim(),
+                                        phone = phone.trim(),
+                                        location = location.trim(),
+                                        role = role,
+                                        farmOrBusinessName = farmOrBusinessName.trim(),
+                                        password = existing?.password ?: "",
+                                        walletBalanceZmw = existing?.walletBalanceZmw ?: 0.0,
+                                        linkedProvider = existing?.linkedProvider ?: "",
+                                        linkedAccountNumber = existing?.linkedAccountNumber ?: ""
+                                    )
+                                )
+                                sessionManager.saveLoggedInPhone(phone.trim())
+                                errorMessage = ""
+                                isEditing = false
+                            }
                         }
                     } else {
                         isEditing = true
@@ -164,6 +213,7 @@ fun ProfileScreen(navController: NavHostController) {
 
         Button(
             onClick = {
+                sessionManager.clearSession()
                 navController.navigate("login") {
                     popUpTo(0) { inclusive = true }
                 }
