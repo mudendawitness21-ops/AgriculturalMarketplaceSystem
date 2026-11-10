@@ -1,6 +1,6 @@
 package com.witness.agromarket.data.model
 
-    data class `Product.kt`(
+    data class Product(
         val id: String = "",
         val name: String = "",
         val price: Double = 0.0,
