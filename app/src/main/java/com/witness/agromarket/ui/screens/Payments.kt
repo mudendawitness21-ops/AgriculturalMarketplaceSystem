@@ -10,50 +10,54 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import com.witness.agromarket.data.model.Order
 import com.witness.agromarket.data.model.WalletTransaction
+import com.witness.agromarket.data.network.DepositRequest
+import com.witness.agromarket.data.network.PaymentApiService
+import com.witness.agromarket.data.network.WithdrawRequest
 import com.witness.agromarket.data.repository.AgroMarketDatabase
 import com.witness.agromarket.data.repository.SessionManager
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
-fun PaymentsScreen(navController: NavHostController) {
+fun PaymentsScreen(
+    navController: NavHostController
+) {
     val context = LocalContext.current
-    val db = remember { AgroMarketDatabase.getDatabase(context) }
-    val orderDao = remember { db.orderDao() }
-    val userDao = remember { db.userDao() }
-    val walletDao = remember { db.walletDao() }
+    val database = remember { AgroMarketDatabase.getDatabase(context) }
+    val userDao = remember { database.userDao() }
+    val walletDao = remember { database.walletDao() }
+    val orderDao = remember { database.orderDao() }
     val sessionManager = remember { SessionManager(context) }
+    val paymentApi = remember { PaymentApiService.create() }
     val scope = rememberCoroutineScope()
 
-    val loggedInPhone = remember { sessionManager.getLoggedInPhone() }
-    val currentUser by userDao.observeUserByPhone(loggedInPhone).collectAsState(initial = null)
+    val phone = remember { sessionManager.getLoggedInPhone() }
+    val currentUser by userDao.observeUserByPhone(phone).collectAsState(initial = null)
+    val transactions by walletDao.getTransactionsForUser(phone).collectAsState(initial = emptyList())
     val allOrders by orderDao.getAllOrders().collectAsState(initial = emptyList())
-    val transactions by walletDao.getTransactionsForUser(loggedInPhone).collectAsState(initial = emptyList())
 
     val walletBalance = currentUser?.walletBalanceZmw ?: 0.0
 
     val userOrders = allOrders.filter {
-        it.buyerPhone == loggedInPhone || it.sellerPhone == loggedInPhone || (it.buyerPhone.isBlank() && it.sellerPhone.isBlank())
+        it.buyerPhone == phone || it.sellerPhone == phone || (it.buyerPhone.isBlank() && it.sellerPhone.isBlank())
     }
 
-    var activeFormMode by remember { mutableStateOf("NONE") }
-    var selectedProvider by remember { mutableStateOf("") }
-    var externalAccountNo by remember { mutableStateOf("") }
     var amountInput by remember { mutableStateOf("") }
-    var pinInput by remember { mutableStateOf("") }
-
-    var selectedOrder by remember { mutableStateOf<Order?>(null) }
     var feedbackMessage by remember { mutableStateOf("") }
-    var isErrorFeedback by remember { mutableStateOf(false) }
+    var isError by remember { mutableStateOf(false) }
+    var selectedProvider by remember { mutableStateOf("MTN MoMo") }
+    var accountNumber by remember { mutableStateOf("") }
+    var depositMode by remember { mutableStateOf(true) }
+    var isProcessingNetwork by remember { mutableStateOf(false) }
+    var selectedOrder by remember { mutableStateOf<Order?>(null) }
 
     LaunchedEffect(currentUser) {
-        if (externalAccountNo.isBlank() && currentUser != null) {
-            externalAccountNo = currentUser!!.linkedAccountNumber.ifBlank { currentUser!!.phone }
-            selectedProvider = currentUser!!.linkedProvider
+        if (accountNumber.isBlank() && currentUser != null) {
+            accountNumber = currentUser!!.linkedAccountNumber.ifBlank { currentUser!!.phone }
         }
     }
 
@@ -65,7 +69,7 @@ fun PaymentsScreen(navController: NavHostController) {
     ) {
         item {
             Text(
-                text = "AgroMarket Online Account",
+                text = "AgroMarket Wallet",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -78,225 +82,274 @@ fun PaymentsScreen(navController: NavHostController) {
             ) {
                 Text("Back to Home")
             }
-        }
 
-        // 1. Individual Online Money Account Card
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-            ) {
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "${currentUser?.fullName ?: "Account Holder"} (${currentUser?.role ?: "User"})",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = "Wallet ID / Phone: ${currentUser?.phone ?: "Not Logged In"}",
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                    Text(text = currentUser?.fullName ?: "Guest", fontWeight = FontWeight.Bold)
+                    Text(text = currentUser?.phone ?: "")
                     Spacer(modifier = Modifier.height(8.dp))
+                    Text(text = "Balance", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        text = "Balance: ZMW ${"%.2f".format(walletBalance)}",
+                        text = "ZMW ${"%.2f".format(walletBalance)}",
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold
                     )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                activeFormMode = if (activeFormMode == "DEPOSIT") "NONE" else "DEPOSIT"
-                                feedbackMessage = ""
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Deposit Funds")
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                activeFormMode = if (activeFormMode == "WITHDRAW") "NONE" else "WITHDRAW"
-                                feedbackMessage = ""
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Withdraw")
-                        }
-                    }
                 }
             }
         }
 
-        // 2. Deposit or Withdraw Form
-        if (activeFormMode != "NONE") {
-            val isDeposit = activeFormMode == "DEPOSIT"
-            item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = if (isDeposit) "Deposit from Mobile Money / Bank" else "Withdraw to Mobile Money / Bank",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Select Provider:", fontWeight = FontWeight.Medium)
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = {
+                        depositMode = true
+                        feedbackMessage = ""
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Deposit")
+                }
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilterChip(
-                                selected = selectedProvider == "MTN MoMo",
-                                onClick = { selectedProvider = "MTN MoMo" },
-                                label = { Text("MTN MoMo") }
-                            )
-                            FilterChip(
-                                selected = selectedProvider == "Airtel Money",
-                                onClick = { selectedProvider = "Airtel Money" },
-                                label = { Text("Airtel Money") }
-                            )
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilterChip(
-                                selected = selectedProvider == "Zamtel Kwacha",
-                                onClick = { selectedProvider = "Zamtel Kwacha" },
-                                label = { Text("Zamtel") }
-                            )
-                            FilterChip(
-                                selected = selectedProvider == "Bank Account",
-                                onClick = { selectedProvider = "Bank Account" },
-                                label = { Text("Bank Account") }
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = externalAccountNo,
-                            onValueChange = { externalAccountNo = it },
-                            label = { Text("Mobile Money Number or Bank Account No.") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = amountInput,
-                            onValueChange = { amountInput = it },
-                            label = { Text(if (isDeposit) "Deposit Amount (ZMW)" else "Withdraw Amount (ZMW)") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = pinInput,
-                            onValueChange = { pinInput = it },
-                            label = { Text("4-Digit PIN Authorization") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                onClick = {
-                                    activeFormMode = "NONE"
-                                    amountInput = ""
-                                    pinInput = ""
-                                },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("Cancel")
-                            }
-
-                            Button(
-                                onClick = {
-                                    val amount = amountInput.toDoubleOrNull()
-                                    val user = currentUser
-                                    if (user == null) {
-                                        isErrorFeedback = true
-                                        feedbackMessage = "Please login or register an account before transacting."
-                                    } else if (selectedProvider.isBlank() || externalAccountNo.length < 6 || amount == null || amount <= 0.0 || pinInput.length < 4) {
-                                        isErrorFeedback = true
-                                        feedbackMessage = "Enter provider, valid account number, amount, and 4-digit PIN."
-                                    } else if (!isDeposit && amount > user.walletBalanceZmw) {
-                                        isErrorFeedback = true
-                                        feedbackMessage = "Withdrawal Declined: Insufficient balance (ZMW ${"%.2f".format(user.walletBalanceZmw)})."
-                                    } else {
-                                        scope.launch {
-                                            val ref = "${if (isDeposit) "DEP" else "WDR"}-${System.currentTimeMillis().toString().takeLast(6)}"
-                                            val newBalance = if (isDeposit) {
-                                                user.walletBalanceZmw + amount
-                                            } else {
-                                                user.walletBalanceZmw - amount
-                                            }
-                                            userDao.insertOrUpdateUser(
-                                                user.copy(
-                                                    walletBalanceZmw = newBalance,
-                                                    linkedProvider = selectedProvider,
-                                                    linkedAccountNumber = externalAccountNo.trim()
-                                                )
-                                            )
-                                            walletDao.insertTransaction(
-                                                WalletTransaction(
-                                                    referenceId = ref,
-                                                    userPhone = user.phone,
-                                                    type = if (isDeposit) "DEPOSIT" else "WITHDRAWAL",
-                                                    channel = selectedProvider,
-                                                    accountNumber = externalAccountNo.trim(),
-                                                    amountZmw = amount,
-                                                    status = "SUCCESS",
-                                                    description = if (isDeposit) {
-                                                        "Deposited from $selectedProvider ($externalAccountNo)"
-                                                    } else {
-                                                        "Withdrawn to $selectedProvider ($externalAccountNo)"
-                                                    }
-                                                )
-                                            )
-                                            isErrorFeedback = false
-                                            feedbackMessage = if (isDeposit) {
-                                                "Deposited ZMW ${"%.2f".format(amount)} into AgroMarket Account (Ref: $ref)."
-                                            } else {
-                                                "Withdrawn ZMW ${"%.2f".format(amount)} to $selectedProvider $externalAccountNo (Ref: $ref)."
-                                            }
-                                            amountInput = ""
-                                            pinInput = ""
-                                            activeFormMode = "NONE"
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text(if (isDeposit) "Confirm Deposit" else "Confirm Withdrawal")
-                            }
-                        }
-                    }
+                OutlinedButton(
+                    onClick = {
+                        depositMode = false
+                        feedbackMessage = ""
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Withdraw")
                 }
             }
         }
+
+        item {
+            OutlinedTextField(
+                value = accountNumber,
+                onValueChange = { accountNumber = it },
+                label = {
+                    Text(
+                        if (selectedProvider == "Bank Account") "Bank Account Number"
+                        else "Mobile Money Number (e.g. 097... / 096...)"
+                    )
+                },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        item {
+            OutlinedTextField(
+                value = amountInput,
+                onValueChange = { amountInput = it },
+                label = { Text("Amount (ZMW)") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        item {
+            Column {
+                Text(text = "Select Provider", fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = selectedProvider == "MTN MoMo",
+                        onClick = { selectedProvider = "MTN MoMo" },
+                        label = { Text("MTN") }
+                    )
+                    FilterChip(
+                        selected = selectedProvider == "Airtel Money",
+                        onClick = { selectedProvider = "Airtel Money" },
+                        label = { Text("Airtel") }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = selectedProvider == "Zamtel Kwacha",
+                        onClick = { selectedProvider = "Zamtel Kwacha" },
+                        label = { Text("Zamtel") }
+                    )
+                    FilterChip(
+                        selected = selectedProvider == "Bank Account",
+                        onClick = { selectedProvider = "Bank Account" },
+                        label = { Text("Bank") }
+                    )
+                }
+            }
+        }
+
         if (feedbackMessage.isNotEmpty()) {
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
-                        containerColor = if (isErrorFeedback) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer
+                        containerColor = if (isError) MaterialTheme.colorScheme.errorContainer
+                        else MaterialTheme.colorScheme.secondaryContainer
                     )
                 ) {
                     Text(
                         text = feedbackMessage,
-                        color = if (isErrorFeedback) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSecondaryContainer,
+                        color = if (isError) MaterialTheme.colorScheme.onErrorContainer
+                        else MaterialTheme.colorScheme.onSecondaryContainer,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(12.dp)
                     )
                 }
             }
         }
-// 3. Buyer-to-Seller Wallet Checkout Confirmation
+
+        item {
+            Button(
+                enabled = !isProcessingNetwork,
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    val amount = amountInput.toDoubleOrNull()
+                    val user = currentUser
+
+                    if (user == null) {
+                        isError = true
+                        feedbackMessage = "Please log in first."
+                        return@Button
+                    }
+
+                    if (accountNumber.trim().length < 9) {
+                        isError = true
+                        feedbackMessage = "Enter a valid Mobile Money or account number."
+                        return@Button
+                    }
+
+                    if (amount == null || amount <= 0) {
+                        isError = true
+                        feedbackMessage = "Enter a valid amount."
+                        return@Button
+                    }
+
+                    if (!depositMode && amount > user.walletBalanceZmw) {
+                        isError = true
+                        feedbackMessage = "Insufficient balance."
+                        return@Button
+                    }
+
+                    scope.launch {
+                        isProcessingNetwork = true
+                        try {
+                            if (depositMode) {
+                                val ref = "DEP-${System.currentTimeMillis()}"
+                                val initRes = paymentApi.initiateDeposit(
+                                    DepositRequest(
+                                        phone = accountNumber.trim(),
+                                        amount = amount,
+                                        provider = selectedProvider,
+                                        reference = ref
+                                    )
+                                )
+                                if (!initRes.status) {
+                                    isError = true
+                                    feedbackMessage = initRes.message
+                                } else {
+                                    isError = false
+                                    feedbackMessage = "USSD prompt sent to $accountNumber. Enter your SIM PIN on your phone..."
+                                    var finalStatus = initRes.paymentStatus ?: "pending"
+                                    var attempts = 0
+                                    while (finalStatus != "successful" && finalStatus != "failed" && attempts < 12) {
+                                        delay(5000)
+                                        val verifyRes = paymentApi.verifyDeposit(ref)
+                                        finalStatus = verifyRes.paymentStatus ?: "pending"
+                                        attempts++
+                                    }
+                                    if (finalStatus == "successful") {
+                                        userDao.insertOrUpdateUser(
+                                            user.copy(
+                                                walletBalanceZmw = user.walletBalanceZmw + amount,
+                                                linkedProvider = selectedProvider,
+                                                linkedAccountNumber = accountNumber.trim()
+                                            )
+                                        )
+                                        walletDao.insertTransaction(
+                                            WalletTransaction(
+                                                referenceId = ref,
+                                                userPhone = user.phone,
+                                                type = "DEPOSIT",
+                                                channel = selectedProvider,
+                                                accountNumber = accountNumber.trim(),
+                                                amountZmw = amount,
+                                                status = "SUCCESS",
+                                                description = "Verified deposit via $selectedProvider ($accountNumber)"
+                                            )
+                                        )
+                                        isError = false
+                                        feedbackMessage = "Deposit of ZMW ${"%.2f".format(amount)} confirmed! (Ref: $ref)"
+                                        amountInput = ""
+                                    } else {
+                                        isError = true
+                                        feedbackMessage = "Transaction not completed (Status: $finalStatus). Wallet was not credited."
+                                    }
+                                }
+                            } else {
+                                val ref = "WDR-${System.currentTimeMillis()}"
+                                val withdrawRes = paymentApi.initiateWithdraw(
+                                    WithdrawRequest(
+                                        phone = accountNumber.trim(),
+                                        amount = amount,
+                                        provider = selectedProvider,
+                                        accountName = user.fullName,
+                                        reference = ref
+                                    )
+                                )
+                                if (withdrawRes.status) {
+                                    userDao.insertOrUpdateUser(
+                                        user.copy(
+                                            walletBalanceZmw = user.walletBalanceZmw - amount,
+                                            linkedProvider = selectedProvider,
+                                            linkedAccountNumber = accountNumber.trim()
+                                        )
+                                    )
+                                    walletDao.insertTransaction(
+                                        WalletTransaction(
+                                            referenceId = ref,
+                                            userPhone = user.phone,
+                                            type = "WITHDRAWAL",
+                                            channel = selectedProvider,
+                                            accountNumber = accountNumber.trim(),
+                                            amountZmw = amount,
+                                            status = "SUCCESS",
+                                            description = "Withdrawn to $selectedProvider ($accountNumber)"
+                                        )
+                                    )
+                                    isError = false
+                                    feedbackMessage = "ZMW ${"%.2f".format(amount)} sent to $selectedProvider $accountNumber (Ref: $ref)."
+                                    amountInput = ""
+                                } else {
+                                    isError = true
+                                    feedbackMessage = withdrawRes.message
+                                }
+                            }
+                        } catch (e: Exception) {
+                            isError = true
+                            feedbackMessage = "Server Unreachable: Check that node server.js is running (${e.localizedMessage})."
+                        } finally {
+                            isProcessingNetwork = false
+                        }
+                    }
+                }
+            ) {
+                Text(
+                    if (isProcessingNetwork) "Waiting for PIN..."
+                    else if (depositMode) "Send USSD Deposit"
+                    else "Withdraw Funds"
+                )
+            }
+        }
+// Order Payment Confirmation Card
         if (selectedOrder != null) {
             val order = selectedOrder!!
             item {
@@ -311,9 +364,8 @@ fun PaymentsScreen(navController: NavHostController) {
                             fontWeight = FontWeight.Bold
                         )
                         Text("Product: ${order.productName} (${order.quantity})")
-                        Text("Receiver (Farmer): ${order.sellerName.ifBlank { "AgroMarket Seller" }} (${order.sellerPhone})")
-                        Text("Amount to Transfer: ZMW ${"%.2f".format(order.totalPriceZmw)}")
-                        Text("Your Available Balance: ZMW ${"%.2f".format(walletBalance)}")
+                        Text("Receiver: ${order.sellerName.ifBlank { "Seller" }}")
+                        Text("Amount: ZMW ${"%.2f".format(order.totalPriceZmw)}")
                         Spacer(modifier = Modifier.height(12.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(
@@ -326,17 +378,15 @@ fun PaymentsScreen(navController: NavHostController) {
                                 onClick = {
                                     val buyer = currentUser
                                     if (buyer == null || walletBalance < order.totalPriceZmw) {
-                                        val needed = order.totalPriceZmw - walletBalance
-                                        isErrorFeedback = true
-                                        feedbackMessage = "Payment Failed: Insufficient AgroMarket balance. Deposit ZMW ${"%.2f".format(needed)} first."
-                                        activeFormMode = "DEPOSIT"
+                                        isError = true
+                                        feedbackMessage = "Insufficient wallet balance. Deposit funds first."
                                         selectedOrder = null
                                     } else {
                                         scope.launch {
                                             val txnRef = "TXN-${System.currentTimeMillis().toString().takeLast(6)}"
-// 1. Deduct from Buyer's AgroMarket Account
-                                            val updatedBuyerBalance = buyer.walletBalanceZmw - order.totalPriceZmw
-                                            userDao.insertOrUpdateUser(buyer.copy(walletBalanceZmw = updatedBuyerBalance))
+                                            userDao.insertOrUpdateUser(
+                                                buyer.copy(walletBalanceZmw = buyer.walletBalanceZmw - order.totalPriceZmw)
+                                            )
                                             walletDao.insertTransaction(
                                                 WalletTransaction(
                                                     referenceId = txnRef,
@@ -346,10 +396,9 @@ fun PaymentsScreen(navController: NavHostController) {
                                                     accountNumber = order.sellerPhone,
                                                     amountZmw = order.totalPriceZmw,
                                                     status = "SUCCESS",
-                                                    description = "Paid ORD-${order.id} (${order.productName}) to ${order.sellerName}"
+                                                    description = "Paid ORD-${order.id} (${order.productName})"
                                                 )
                                             )
-// 2. Credit Receiver's (Farmer's) AgroMarket Account
                                             if (order.sellerPhone.isNotBlank()) {
                                                 val seller = userDao.getUserByPhone(order.sellerPhone)
                                                 if (seller != null) {
@@ -365,35 +414,35 @@ fun PaymentsScreen(navController: NavHostController) {
                                                             accountNumber = buyer.phone,
                                                             amountZmw = order.totalPriceZmw,
                                                             status = "SUCCESS",
-                                                            description = "Received payment for ORD-${order.id} (${order.productName}) from ${buyer.fullName}"
+                                                            description = "Received payment for ORD-${order.id} (${order.productName})"
                                                         )
                                                     )
                                                 }
                                             }
-// 3. Mark Order Paid
                                             orderDao.updateOrder(
                                                 order.copy(
                                                     paymentStatus = "Paid",
                                                     paymentMethod = "AgroMarket Wallet (Ref: $txnRef)"
                                                 )
                                             )
-                                            isErrorFeedback = false
-                                            feedbackMessage = "Transfer of ZMW ${"%.2f".format(order.totalPriceZmw)} sent to ${order.sellerName.ifBlank { "Seller" }} (Ref: $txnRef)."
+                                            isError = false
+                                            feedbackMessage = "Order ORD-${order.id} paid! Receipt: $txnRef"
                                             selectedOrder = null
                                         }
                                     }
                                 },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("Confirm Transfer")
+                                Text("Confirm Payment")
                             }
                         }
                     }
                 }
             }
         }
-// 4. Orders List
+// Orders & Payment Status
         item {
+            Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = "Orders & Payment Status",
                 style = MaterialTheme.typography.titleMedium,
@@ -401,10 +450,10 @@ fun PaymentsScreen(navController: NavHostController) {
             )
         }
         if (userOrders.isEmpty()) {
-            item { Text("No orders found for your account.") }
+            item { Text("No orders found.") }
         } else {
             items(userOrders) { order ->
-                val isSeller = order.sellerPhone == loggedInPhone && order.buyerPhone != loggedInPhone
+                val isSeller = order.sellerPhone == phone && order.buyerPhone != phone
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Row(
@@ -419,11 +468,6 @@ fun PaymentsScreen(navController: NavHostController) {
                             )
                         }
                         Text("Quantity: ${order.quantity} | Amount: ZMW ${"%.2f".format(order.totalPriceZmw)}")
-                        if (isSeller) {
-                            Text("Buyer: ${order.buyerOrFarmerName} (${order.buyerPhone})")
-                        } else if (order.sellerName.isNotBlank()) {
-                            Text("Receiver: ${order.sellerName}")
-                        }
                         if (order.paymentStatus == "Paid") {
                             Text("Receipt: ${order.paymentMethod}", style = MaterialTheme.typography.bodySmall)
                         } else if (!isSeller) {
@@ -432,14 +476,14 @@ fun PaymentsScreen(navController: NavHostController) {
                                 selectedOrder = order
                                 feedbackMessage = ""
                             }) {
-                                Text("Pay from AgroMarket Account")
+                                Text("Pay from Wallet")
                             }
                         }
                     }
                 }
             }
         }
-// 5. Individual Account Statement
+// Account Statement
         item {
             Spacer(modifier = Modifier.height(8.dp))
             Text(
