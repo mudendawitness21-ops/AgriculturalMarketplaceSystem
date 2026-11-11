@@ -10,7 +10,7 @@ PART A
 	| Witness Mudenda | 2521886        |
 	------------------------------------
   
-
+PART B
 
 1.  .Problem Statement
 Most farmers rely on traditional methods of selling produce such as open markets and brokers. 
